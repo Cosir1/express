@@ -32,7 +32,7 @@ RUN npm install -g pnpm && pnpm install --prod
 COPY --from=builder /app/dist ./dist
 
 # Expose port
-EXPOSE 3000
+EXPOSE 3005
 
 # Start the application
 CMD ["node", "dist/index.js"]

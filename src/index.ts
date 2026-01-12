@@ -14,7 +14,7 @@ app.get("/api/posts/:postId/comments/:commentId", (_req, res) => {
   res.json({ postId: _req.params.postId, commentId: _req.params.commentId });
 });
 
-const PORT = process.env.PORT || 3000;
+const PORT = 3005;
 
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
