@@ -9,7 +9,7 @@ dotenv.config();
 
 const app = express();
 
-// Middleware
+// Middle
 app.use(express.json());
 
 // Trakt.tv Configuration
