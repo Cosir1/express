@@ -1,10 +1,23 @@
 import express from "express";
 import axios from "axios";
+import dotenv from "dotenv";
+
+// Load environment variables
+dotenv.config();
 
 const app = express();
 
 // Middleware
 app.use(express.json());
+
+// Trakt.tv Configuration
+const TRAKT_CLIENT_ID = process.env.TRAKT_CLIENT_ID;
+const TRAKT_CLIENT_SECRET = process.env.TRAKT_CLIENT_SECRET;
+const TRAKT_REDIRECT_URI = process.env.TRAKT_REDIRECT_URI;
+const TRAKT_API_BASE = "https://api.trakt.tv";
+
+// In-memory token storage (for demo)
+let traktTokens: any = null;
 
 // Consumet API base URL
 const CONSUMET_API_BASE = "https://api.consumet.org";
@@ -135,6 +148,118 @@ app.get("/api/movies/info/:id", async (req, res) => {
   } catch (error) {
     console.error("Error fetching movie info:", error);
     res.status(500).json({ error: "Failed to fetch movie info" });
+  }
+});
+
+// Trakt.tv OAuth Endpoints
+
+// 1. Authorize - Redirect user to Trakt
+app.get("/api/trakt/authorize", (req, res) => {
+  if (!TRAKT_CLIENT_ID || !TRAKT_REDIRECT_URI) {
+    return res.status(500).json({ error: "Trakt credentials not configured" });
+  }
+
+  const authUrl = `https://trakt.tv/oauth/authorize?response_type=code&client_id=${TRAKT_CLIENT_ID}&redirect_uri=${TRAKT_REDIRECT_URI}`;
+  res.redirect(authUrl);
+});
+
+// 2. Callback - Handle redirect from Trakt
+app.get("/api/trakt/callback", async (req, res) => {
+  try {
+    const { code } = req.query;
+
+    if (!code) {
+      return res.status(400).json({ error: "Authorization code missing" });
+    }
+
+    const response = await axios.post(`${TRAKT_API_BASE}/oauth/token`, {
+      code,
+      client_id: TRAKT_CLIENT_ID,
+      client_secret: TRAKT_CLIENT_SECRET,
+      redirect_uri: TRAKT_REDIRECT_URI,
+      grant_type: "authorization_code",
+    });
+
+    traktTokens = response.data;
+    res.json({
+      message: "Authorization successful",
+      tokens: traktTokens,
+    });
+  } catch (error: any) {
+    console.error(
+      "Trakt callback error:",
+      error.response?.data || error.message,
+    );
+    res.status(500).json({
+      error: "Failed to exchange code for tokens",
+      details: error.response?.data || error.message,
+    });
+  }
+});
+
+// 3. Get Current Token
+app.get("/api/trakt/token", (req, res) => {
+  if (!traktTokens) {
+    return res
+      .status(404)
+      .json({ error: "No Trakt tokens found. Please authorize first." });
+  }
+  res.json(traktTokens);
+});
+
+// 4. Refresh Token
+app.post("/api/trakt/refresh", async (req, res) => {
+  try {
+    if (!traktTokens?.refresh_token) {
+      return res.status(400).json({ error: "No refresh token available" });
+    }
+
+    const response = await axios.post(`${TRAKT_API_BASE}/oauth/token`, {
+      refresh_token: traktTokens.refresh_token,
+      client_id: TRAKT_CLIENT_ID,
+      client_secret: TRAKT_CLIENT_SECRET,
+      redirect_uri: TRAKT_REDIRECT_URI,
+      grant_type: "refresh_token",
+    });
+
+    traktTokens = response.data;
+    res.json({
+      message: "Token refreshed successfully",
+      tokens: traktTokens,
+    });
+  } catch (error: any) {
+    console.error(
+      "Trakt refresh error:",
+      error.response?.data || error.message,
+    );
+    res.status(500).json({
+      error: "Failed to refresh token",
+      details: error.response?.data || error.message,
+    });
+  }
+});
+
+// 5. Revoke Token
+app.post("/api/trakt/revoke", async (req, res) => {
+  try {
+    if (!traktTokens?.access_token) {
+      return res.status(400).json({ error: "No access token to revoke" });
+    }
+
+    await axios.post(`${TRAKT_API_BASE}/oauth/revoke`, {
+      token: traktTokens.access_token,
+      client_id: TRAKT_CLIENT_ID,
+      client_secret: TRAKT_CLIENT_SECRET,
+    });
+
+    traktTokens = null;
+    res.json({ message: "Token revoked successfully" });
+  } catch (error: any) {
+    console.error("Trakt revoke error:", error.response?.data || error.message);
+    res.status(500).json({
+      error: "Failed to revoke token",
+      details: error.response?.data || error.message,
+    });
   }
 });
 
