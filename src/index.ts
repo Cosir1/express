@@ -1,6 +1,8 @@
 import express from "express";
 import axios from "axios";
 import dotenv from "dotenv";
+import fs from "fs/promises";
+import path from "path";
 
 // Load environment variables
 dotenv.config();
@@ -15,9 +17,25 @@ const TRAKT_CLIENT_ID = process.env.TRAKT_CLIENT_ID;
 const TRAKT_CLIENT_SECRET = process.env.TRAKT_CLIENT_SECRET;
 const TRAKT_REDIRECT_URI = process.env.TRAKT_REDIRECT_URI;
 const TRAKT_API_BASE = "https://api.trakt.tv";
+const TOKENS_FILE = path.join(process.cwd(), "trakt_tokens.json");
 
-// In-memory token storage (for demo)
-let traktTokens: any = null;
+// Persistent token storage helpers
+async function saveTokens(tokens: any) {
+  try {
+    await fs.writeFile(TOKENS_FILE, JSON.stringify(tokens, null, 2));
+  } catch (error) {
+    console.error("Error saving tokens to file:", error);
+  }
+}
+
+async function loadTokens() {
+  try {
+    const data = await fs.readFile(TOKENS_FILE, "utf-8");
+    return JSON.parse(data);
+  } catch (error) {
+    return null;
+  }
+}
 
 // Consumet API base URL
 const CONSUMET_API_BASE = "https://api.consumet.org";
@@ -180,10 +198,11 @@ app.get("/api/trakt/callback", async (req, res) => {
       grant_type: "authorization_code",
     });
 
-    traktTokens = response.data;
+    const tokens = response.data;
+    await saveTokens(tokens);
     res.json({
       message: "Authorization successful",
-      tokens: traktTokens,
+      tokens: tokens,
     });
   } catch (error: any) {
     console.error(
@@ -198,34 +217,37 @@ app.get("/api/trakt/callback", async (req, res) => {
 });
 
 // 3. Get Current Token
-app.get("/api/trakt/token", (req, res) => {
-  if (!traktTokens) {
+app.get("/api/trakt/token", async (req, res) => {
+  const tokens = await loadTokens();
+  if (!tokens) {
     return res
       .status(404)
       .json({ error: "No Trakt tokens found. Please authorize first." });
   }
-  res.json(traktTokens);
+  res.json(tokens);
 });
 
 // 4. Refresh Token
 app.post("/api/trakt/refresh", async (req, res) => {
   try {
-    if (!traktTokens?.refresh_token) {
+    const currentTokens = await loadTokens();
+    if (!currentTokens?.refresh_token) {
       return res.status(400).json({ error: "No refresh token available" });
     }
 
     const response = await axios.post(`${TRAKT_API_BASE}/oauth/token`, {
-      refresh_token: traktTokens.refresh_token,
+      refresh_token: currentTokens.refresh_token,
       client_id: TRAKT_CLIENT_ID,
       client_secret: TRAKT_CLIENT_SECRET,
       redirect_uri: TRAKT_REDIRECT_URI,
       grant_type: "refresh_token",
     });
 
-    traktTokens = response.data;
+    const newTokens = response.data;
+    await saveTokens(newTokens);
     res.json({
       message: "Token refreshed successfully",
-      tokens: traktTokens,
+      tokens: newTokens,
     });
   } catch (error: any) {
     console.error(
@@ -242,22 +264,68 @@ app.post("/api/trakt/refresh", async (req, res) => {
 // 5. Revoke Token
 app.post("/api/trakt/revoke", async (req, res) => {
   try {
-    if (!traktTokens?.access_token) {
+    const tokens = await loadTokens();
+    if (!tokens?.access_token) {
       return res.status(400).json({ error: "No access token to revoke" });
     }
 
     await axios.post(`${TRAKT_API_BASE}/oauth/revoke`, {
-      token: traktTokens.access_token,
+      token: tokens.access_token,
       client_id: TRAKT_CLIENT_ID,
       client_secret: TRAKT_CLIENT_SECRET,
     });
 
-    traktTokens = null;
+    try {
+      await fs.unlink(TOKENS_FILE);
+    } catch (e) {
+      // Ignore if file doesn't exist
+    }
+
     res.json({ message: "Token revoked successfully" });
   } catch (error: any) {
     console.error("Trakt revoke error:", error.response?.data || error.message);
     res.status(500).json({
       error: "Failed to revoke token",
+      details: error.response?.data || error.message,
+    });
+  }
+});
+
+// 6. Test Token Validity
+app.get("/api/trakt/test-token", async (req, res) => {
+  try {
+    const tokens = await loadTokens();
+    if (!tokens?.access_token) {
+      return res
+        .status(401)
+        .json({ error: "No access token found. Please authorize first." });
+    }
+
+    // Attempt to fetch user settings to verify the token
+    const response = await axios.get(`${TRAKT_API_BASE}/users/settings`, {
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${tokens.access_token}`,
+        "trakt-api-version": "2",
+        "trakt-api-key": TRAKT_CLIENT_ID,
+      },
+    });
+
+    res.json({
+      message: "Token is valid",
+      user: {
+        username: response.data.user.username,
+        name: response.data.user.name,
+        joined_at: response.data.user.joined_at,
+      },
+    });
+  } catch (error: any) {
+    console.error(
+      "Trakt test-token error:",
+      error.response?.data || error.message,
+    );
+    res.status(error.response?.status || 500).json({
+      error: "Token test failed",
       details: error.response?.data || error.message,
     });
   }
